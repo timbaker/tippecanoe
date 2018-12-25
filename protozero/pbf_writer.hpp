@@ -32,6 +32,11 @@ documentation.
 # include <protozero/byteswap.hpp>
 #endif
 
+
+#ifdef TIPPERWIN32
+#undef max
+#endif
+
 namespace protozero {
 
 namespace detail {

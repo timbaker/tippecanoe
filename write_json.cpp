@@ -9,6 +9,9 @@
 #include <vector>
 #include <map>
 #include <string>
+#ifdef TIPPEWIN32
+#include <asprintf.h>
+#endif
 #include "projection.hpp"
 #include "geometry.hpp"
 #include "mvt.hpp"

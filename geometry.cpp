@@ -6,7 +6,11 @@
 #include <map>
 #include <algorithm>
 #include <cstdio>
+#ifdef TIPPEWIN32
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 #include <cmath>
 #include <limits.h>
 #include <sqlite3.h>

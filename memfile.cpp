@@ -1,7 +1,18 @@
 #include <stdlib.h>
 #include <string.h>
+#ifdef TIPPEWIN32
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
+#ifdef TIPPEWIN32
+#include <mman.h>
+static int ftruncate(int fd, long size) {
+    return _chsize(fd, size);
+}
+#else
 #include <sys/mman.h>
+#endif
 #include "memfile.hpp"
 
 #define INCREMENT 131072

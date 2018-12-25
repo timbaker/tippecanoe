@@ -1,0 +1,18 @@
+[submodule "win32/dirent"]
+	path = win32/dirent
+	url = https://github.com/timbaker/dirent.git
+[submodule "win32/mman-win32"]
+	path = win32/mman-win32
+	url = https://github.com/timbaker/mman-win32.git
+[submodule "win32/getopt_port"]
+	path = win32/getopt_port
+	url = https://github.com/timbaker/getopt_port.git
+[submodule "win32/asprintf"]
+	path = win32/asprintf
+	url = https://github.com/timbaker/asprintf.git
+[submodule "win32/pthreads4w"]
+	path = win32/pthreads4w
+	url = https://github.com/timbaker/pthreads4w.git
+[submodule "win32/zlib"]
+	path = win32/zlib
+	url = https://github.com/timbaker/zlib.git

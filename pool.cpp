@@ -6,6 +6,11 @@
 #include "memfile.hpp"
 #include "pool.hpp"
 
+#ifdef TIPPEWIN32
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#endif
+
 int swizzlecmp(const char *a, const char *b) {
 	ssize_t alen = strlen(a);
 	ssize_t blen = strlen(b);

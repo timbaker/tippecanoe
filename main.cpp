@@ -10,10 +10,26 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#ifdef TIPPEWIN32
+#include <io.h>
+#define O_CLOEXEC 0
+#else
 #include <unistd.h>
+#endif
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifdef TIPPEWIN32
+#include <mman.h>
+#define MADV_DONTNEED 0
+#define MADV_RANDOM 0
+#define MADV_SEQUENTIAL 0
+#define MADV_WILLNEED 0
+int madvise(void *addr, size_t length, int advice) { return 0; }
+#include <sys/timeb.h>
+#include <WinSock2.h>
+#else
 #include <sys/mman.h>
+#endif
 #include <string.h>
 #include <fcntl.h>
 #include <ctype.h>
@@ -21,11 +37,17 @@
 #include <limits.h>
 #include <sqlite3.h>
 #include <stdarg.h>
+#ifndef TIPPEWIN32
 #include <sys/resource.h>
+#endif
 #include <pthread.h>
 #include <getopt.h>
 #include <signal.h>
+#ifdef TIPPEWIN32
+#include <winsock.h> // timeval
+#else
 #include <sys/time.h>
+#endif
 #include <zlib.h>
 #include <algorithm>
 #include <vector>
@@ -39,6 +61,10 @@
 #include <sys/sysctl.h>
 #include <sys/param.h>
 #include <sys/mount.h>
+#elif defined(TIPPEWIN32)
+#include <sys/stat.h>
+#define statfs _stat
+#define fstatfs _fstat
 #else
 #include <sys/statfs.h>
 #endif
@@ -61,6 +87,10 @@
 #include "dirtiles.hpp"
 #include "evaluator.hpp"
 #include "text.hpp"
+
+#ifdef TIPPEWIN32
+#include <cassert>
+#endif
 
 static int low_detail = 12;
 static int full_detail = -1;
@@ -159,7 +189,13 @@ void init_cpus() {
 	if (TIPPECANOE_MAX_THREADS != NULL) {
 		CPUS = atoi_require(TIPPECANOE_MAX_THREADS, "TIPPECANOE_MAX_THREADS");
 	} else {
+#ifdef TIPPEWIN32
+		SYSTEM_INFO sysInfo;
+		GetSystemInfo(&sysInfo);
+		CPUS = sysInfo.dwNumberOfProcessors;
+#else
 		CPUS = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
 	}
 
 	if (CPUS < 1) {
@@ -174,6 +210,9 @@ void init_cpus() {
 	// Round down to a power of 2
 	CPUS = 1 << (int) (log(CPUS) / log(2));
 
+#ifdef TIPPEWIN32
+	MAX_FILES = 1000; // FIXME
+#else
 	struct rlimit rl;
 	if (getrlimit(RLIMIT_NOFILE, &rl) != 0) {
 		perror("getrlimit");
@@ -213,6 +252,7 @@ void init_cpus() {
 		fprintf(stderr, "Can't open a useful number of files: %lld\n", MAX_FILES);
 		exit(EXIT_FAILURE);
 	}
+#endif // TIPPEWIN32
 
 	TEMP_FILES = (MAX_FILES - 10) / 2;
 	if (TEMP_FILES > CPUS * 4) {
@@ -395,7 +435,12 @@ void *run_sort(void *v) {
 }
 
 void do_read_parallel(char *map, long long len, long long initial_offset, const char *reading, std::vector<struct reader> *readers, std::atomic<long long> *progress_seq, std::set<std::string> *exclude, std::set<std::string> *include, int exclude_all, json_object *filter, int basezoom, int source, std::vector<std::map<std::string, layermap_entry> > *layermaps, int *initialized, unsigned *initial_x, unsigned *initial_y, int maxzoom, std::string layername, bool uses_gamma, std::map<std::string, int> const *attribute_types, int separator, double *dist_sum, size_t *dist_count, bool want_dist, bool filters) {
+#if TIPPEWIN32
+	std::vector<long long> segs;
+	segs.resize(CPUS + 1);
+#else
 	long long segs[CPUS + 1];
+#endif
 	segs[0] = 0;
 	segs[CPUS] = len;
 
@@ -407,10 +452,18 @@ void do_read_parallel(char *map, long long len, long long initial_offset, const 
 		}
 	}
 
+#ifdef TIPPEWIN32
+	std::vector<double> dist_sums;
+	std::vector<size_t> dist_counts;
+	dist_sums.resize(CPUS);
+	dist_counts.resize(CPUS);
+	auto layer_seq = std::make_unique<std::atomic<long long>[]>(CPUS);
+#else
 	double dist_sums[CPUS];
 	size_t dist_counts[CPUS];
 
 	std::atomic<long long> layer_seq[CPUS];
+#endif
 	for (size_t i = 0; i < CPUS; i++) {
 		// To preserve feature ordering, unique id for each segment
 		// begins with that segment's offset into the input
@@ -423,7 +476,12 @@ void do_read_parallel(char *map, long long len, long long initial_offset, const 
 	std::vector<serialization_state> sst;
 	sst.resize(CPUS);
 
+#ifdef TIPPEWIN32
+	std::vector<pthread_t> pthreads;
+	pthreads.resize(CPUS);
+#else
 	pthread_t pthreads[CPUS];
+#endif
 	std::vector<std::set<type_and_string> > file_subkeys;
 
 	for (size_t i = 0; i < CPUS; i++) {
@@ -690,20 +748,40 @@ void radix1(int *geomfds_in, int *indexfds_in, int inputs, int prefix, int split
 	int splitbits = log(splits) / log(2);
 	splits = 1 << splitbits;
 
+#ifdef TIPPEWIN32
+	std::vector<FILE*> geomfiles;
+	std::vector<FILE*> indexfiles;
+	std::vector<int> geomfds;
+	std::vector<int> indexfds;
+	std::unique_ptr<std::atomic<long long>[]> sub_geompos = std::make_unique<std::atomic<long long>[]>(splits);
+
+	geomfiles.resize((unsigned)splits);
+	indexfiles.resize((unsigned)splits);
+	geomfds.resize((unsigned)splits);
+	indexfds.resize((unsigned)splits);
+#else
 	FILE *geomfiles[splits];
 	FILE *indexfiles[splits];
 	int geomfds[splits];
 	int indexfds[splits];
 	std::atomic<long long> sub_geompos[splits];
+#endif
 
 	int i;
 	for (i = 0; i < splits; i++) {
 		sub_geompos[i] = 0;
 
+#ifdef TIPPEWIN32
+		char geomname[1024];
+		sprintf(geomname, "%s%s", tmpdir, "/geom.XXXXXXXX");
+		char indexname[1024];
+		sprintf(indexname, "%s%s", tmpdir, "/index.XXXXXXXX");
+#else
 		char geomname[strlen(tmpdir) + strlen("/geom.XXXXXXXX") + 1];
 		sprintf(geomname, "%s%s", tmpdir, "/geom.XXXXXXXX");
 		char indexname[strlen(tmpdir) + strlen("/index.XXXXXXXX") + 1];
 		sprintf(indexname, "%s%s", tmpdir, "/index.XXXXXXXX");
+#endif
 
 		geomfds[i] = mkstemp_cloexec(geomname);
 		if (geomfds[i] < 0) {
@@ -837,7 +915,13 @@ void radix1(int *geomfds_in, int *indexfds_in, int inputs, int prefix, int split
 				std::atomic<long long> indexpos(indexst.st_size);
 				int bytes = sizeof(struct index);
 
+#ifdef TIPPEWIN32
+				SYSTEM_INFO systemInfo;
+				GetSystemInfo(&systemInfo);
+				int page = systemInfo.dwAllocationGranularity; // bytes
+#else
 				int page = sysconf(_SC_PAGESIZE);
+#endif
 				// Don't try to sort more than 2GB at once,
 				// which used to crash Macs and may still
 				long long max_unit = 2LL * 1024 * 1024 * 1024;
@@ -851,13 +935,23 @@ void radix1(int *geomfds_in, int *indexfds_in, int inputs, int prefix, int split
 				}
 
 				size_t nmerges = (indexpos + unit - 1) / unit;
+#ifdef TIPPEWIN32
+				std::vector<struct mergelist> merges;
+				merges.resize(nmerges);
+#else
 				struct mergelist merges[nmerges];
+#endif
 
 				for (size_t a = 0; a < nmerges; a++) {
 					merges[a].start = merges[a].end = 0;
 				}
 
+#ifdef TIPPEWIN32
+				std::vector<pthread_t> pthreads;
+				pthreads.resize(CPUS);
+#else
 				pthread_t pthreads[CPUS];
+#endif
 				std::vector<sort_arg> args;
 
 				for (size_t a = 0; a < CPUS; a++) {
@@ -865,7 +959,11 @@ void radix1(int *geomfds_in, int *indexfds_in, int inputs, int prefix, int split
 						a,
 						CPUS,
 						indexpos,
+#ifdef TIPPEWIN32
+						merges.data(),
+#else
 						merges,
+#endif
 						indexfds[i],
 						nmerges,
 						unit,
@@ -887,7 +985,7 @@ void radix1(int *geomfds_in, int *indexfds_in, int inputs, int prefix, int split
 					}
 				}
 
-				struct indexmap *indexmap = (struct indexmap *) mmap(NULL, indexst.st_size, PROT_READ, MAP_PRIVATE, indexfds[i], 0);
+				struct index *indexmap = (struct index *) mmap(NULL, indexst.st_size, PROT_READ, MAP_PRIVATE, indexfds[i], 0);
 				if (indexmap == MAP_FAILED) {
 					fprintf(stderr, "fd %lld, len %lld\n", (long long) indexfds[i], (long long) indexst.st_size);
 					perror("map index");
@@ -903,7 +1001,13 @@ void radix1(int *geomfds_in, int *indexfds_in, int inputs, int prefix, int split
 				madvise(geommap, geomst.st_size, MADV_RANDOM);
 				madvise(geommap, geomst.st_size, MADV_WILLNEED);
 
+#ifdef TIPPEWIN32
+				merge(merges.data(), nmerges,
+					  reinterpret_cast<unsigned char *>(indexmap),
+					  indexfile, bytes, geommap, geomfile, geompos_out, progress, progress_max, progress_reported, maxzoom, gamma, ds);
+#else
 				merge(merges, nmerges, (unsigned char *) indexmap, indexfile, bytes, geommap, geomfile, geompos_out, progress, progress_max, progress_reported, maxzoom, gamma, ds);
+#endif
 
 				madvise(indexmap, indexst.st_size, MADV_DONTNEED);
 				if (munmap(indexmap, indexst.st_size) < 0) {
@@ -1030,6 +1134,11 @@ void radix(std::vector<struct reader> &readers, int nreaders, FILE *geomfile, FI
 		exit(EXIT_FAILURE);
 	}
 	mem = hw_memsize;
+#elif defined(TIPPEWIN32)
+	MEMORYSTATUSEX status;
+	status.dwLength = sizeof(status);
+	GlobalMemoryStatusEx( &status );
+	mem = (long long) status.ullAvailPhys; // available physical memory in bytes
 #else
 	long long pagesize = sysconf(_SC_PAGESIZE);
 	long long pages = sysconf(_SC_PHYS_PAGES);
@@ -1060,8 +1169,15 @@ void radix(std::vector<struct reader> &readers, int nreaders, FILE *geomfile, FI
 	mem /= 2;
 
 	long long geom_total = 0;
+#ifdef TIPPEWIN32
+	std::vector<int> geomfds;
+	std::vector<int> indexfds;
+	geomfds.resize(nreaders);
+	indexfds.resize(nreaders);
+#else
 	int geomfds[nreaders];
 	int indexfds[nreaders];
+#endif
 	for (int i = 0; i < nreaders; i++) {
 		geomfds[i] = readers[i].geomfd;
 		indexfds[i] = readers[i].indexfd;
@@ -1074,12 +1190,22 @@ void radix(std::vector<struct reader> &readers, int nreaders, FILE *geomfile, FI
 		geom_total += geomst.st_size;
 	}
 
+#ifdef TIPPEWIN32
+	std::vector<drop_state> ds;
+	ds.resize(maxzoom + 1);
+	prep_drop_states(ds.data(), maxzoom, basezoom, droprate);
+#else
 	struct drop_state ds[maxzoom + 1];
 	prep_drop_states(ds, maxzoom, basezoom, droprate);
+#endif
 
 	long long progress = 0, progress_max = geom_total, progress_reported = -1;
 	long long availfiles_before = availfiles;
+#ifdef TIPPEWIN32
+	radix1(geomfds.data(), indexfds.data(), nreaders, 0, splits, mem, tmpdir, &availfiles, geomfile, indexfile, geompos, &progress, &progress_max, &progress_reported, maxzoom, basezoom, droprate, gamma, ds.data());
+#else
 	radix1(geomfds, indexfds, nreaders, 0, splits, mem, tmpdir, &availfiles, geomfile, indexfile, geompos, &progress, &progress_max, &progress_reported, maxzoom, basezoom, droprate, gamma, ds);
+#endif
 
 	if (availfiles - 2 * nreaders != availfiles_before) {
 		fprintf(stderr, "Internal error: miscounted available file descriptors: %lld vs %lld\n", availfiles - 2 * nreaders, availfiles);
@@ -1146,11 +1272,19 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 	for (size_t i = 0; i < CPUS; i++) {
 		struct reader *r = &readers[i];
 
+#ifdef TIPPEWIN32
+		char metaname[1024];
+		char poolname[1024];
+		char treename[1024];
+		char geomname[1024];
+		char indexname[1024];
+#else
 		char metaname[strlen(tmpdir) + strlen("/meta.XXXXXXXX") + 1];
 		char poolname[strlen(tmpdir) + strlen("/pool.XXXXXXXX") + 1];
 		char treename[strlen(tmpdir) + strlen("/tree.XXXXXXXX") + 1];
 		char geomname[strlen(tmpdir) + strlen("/geom.XXXXXXXX") + 1];
 		char indexname[strlen(tmpdir) + strlen("/index.XXXXXXXX") + 1];
+#endif
 
 		sprintf(metaname, "%s%s", tmpdir, "/meta.XXXXXXXX");
 		sprintf(poolname, "%s%s", tmpdir, "/pool.XXXXXXXX");
@@ -1231,18 +1365,48 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 		r->file_bbox[2] = r->file_bbox[3] = 0;
 	}
 
+#ifdef TIPPEWIN32
+	char root[1024];
+	if (GetFullPathName(tmpdir, sizeof(root), root, nullptr) == 0) {
+		perror("GetFullPathName");
+		exit(EXIT_FAILURE);
+	}
+	DWORD spc, bps, freec, totalc;
+	if (!GetDiskFreeSpace(root, &spc, &bps, &freec, &totalc)) {
+		perror("GetDiskFreeSpace");
+		exit(EXIT_FAILURE);
+	}
+	_ULARGE_INTEGER fba, tnb, tfa;
+	if (!GetDiskFreeSpaceEx(root, &fba, &tnb, &tfa)) {
+		perror("GetDiskFreeSpaceEx");
+		exit(EXIT_FAILURE);
+	}
+	long long f_bsize = spc * bps;
+	long long f_bavail = freec;
+	diskfree = f_bsize * f_bavail;
+#else
 	struct statfs fsstat;
 	if (fstatfs(readers[0].geomfd, &fsstat) != 0) {
 		perror("fstatfs");
 		exit(EXIT_FAILURE);
 	}
 	diskfree = (long long) fsstat.f_bsize * fsstat.f_bavail;
+#endif
 
 	std::atomic<long long> progress_seq(0);
 
 	// 2 * CPUS: One per reader thread, one per tiling thread
+#ifdef TIPPEWIN32
+	std::vector<int> initialized;
+	std::vector<unsigned> initial_x;
+	std::vector<unsigned> initial_y;
+	initialized.resize(2 * CPUS);
+	initial_x.resize(2 * CPUS);
+	initial_y.resize(2 * CPUS);
+#else
 	int initialized[2 * CPUS];
 	unsigned initial_x[2 * CPUS], initial_y[2 * CPUS];
+#endif
 	for (size_t i = 0; i < 2 * CPUS; i++) {
 		initialized[i] = initial_x[i] = initial_y[i] = 0;
 	}
@@ -1322,6 +1486,9 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 	double dist_sum = 0;
 	size_t dist_count = 0;
 
+#ifdef TIPPEWIN32
+	int files_open_before_reading = 0;
+#else
 	int files_open_before_reading = open("/dev/null", O_RDONLY | O_CLOEXEC);
 	if (files_open_before_reading < 0) {
 		perror("open /dev/null");
@@ -1331,6 +1498,7 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 		perror("close");
 		exit(EXIT_FAILURE);
 	}
+#endif
 
 	size_t nsources = sources.size();
 	for (size_t source = 0; source < nsources; source++) {
@@ -1370,9 +1538,17 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 				exit(EXIT_FAILURE);
 			}
 
+#ifdef TIPPEWIN32
+			auto layer_seq = std::make_unique<std::atomic<long long>[]>(CPUS);
+			std::vector<double> dist_sums;
+			std::vector<size_t> dist_counts;
+			dist_sums.resize(CPUS);
+			dist_counts.resize(CPUS);
+#else
 			std::atomic<long long> layer_seq[CPUS];
 			double dist_sums[CPUS];
 			size_t dist_counts[CPUS];
+#endif
 			std::vector<struct serialization_state> sst;
 			sst.resize(CPUS);
 
@@ -1427,9 +1603,17 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 		}
 
 		if (sources[source].format == "csv" || (sources[source].file.size() > 4 && sources[source].file.substr(sources[source].file.size() - 4) == std::string(".csv"))) {
+#ifdef TIPPEWIN32
+			auto layer_seq = std::make_unique<std::atomic<long long>[]>(CPUS);
+			std::vector<double> dist_sums;
+			std::vector<size_t> dist_counts;
+			dist_sums.resize(CPUS);
+			dist_counts.resize(CPUS);
+#else
 			std::atomic<long long> layer_seq[CPUS];
 			double dist_sums[CPUS];
 			size_t dist_counts[CPUS];
+#endif
 
 			std::vector<struct serialization_state> sst;
 			sst.resize(CPUS);
@@ -1513,7 +1697,11 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 		}
 
 		if (map != NULL && map != MAP_FAILED && read_parallel_this) {
+#ifdef TIPPEWIN32
+			do_read_parallel(map, st.st_size - off, overall_offset, reading.c_str(), &readers, &progress_seq, exclude, include, exclude_all, filter, basezoom, layer, &layermaps, initialized.data(), initial_x.data(), initial_y.data(), maxzoom, sources[layer].layer, uses_gamma, attribute_types, read_parallel_this, &dist_sum, &dist_count, guess_maxzoom, prefilter != NULL || postfilter != NULL);
+#else
 			do_read_parallel(map, st.st_size - off, overall_offset, reading.c_str(), &readers, &progress_seq, exclude, include, exclude_all, filter, basezoom, layer, &layermaps, initialized, initial_x, initial_y, maxzoom, sources[layer].layer, uses_gamma, attribute_types, read_parallel_this, &dist_sum, &dist_count, guess_maxzoom, prefilter != NULL || postfilter != NULL);
+#endif
 			overall_offset += st.st_size - off;
 			checkdisk(&readers);
 
@@ -1545,7 +1733,11 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 			if (read_parallel_this) {
 				// Serial reading of chunks that are then parsed in parallel
 
+#ifdef TIPPEWIN32
+				char readname[1024];
+#else
 				char readname[strlen(tmpdir) + strlen("/read.XXXXXXXX") + 1];
+#endif
 				sprintf(readname, "%s%s", tmpdir, "/read.XXXXXXXX");
 				int readfd = mkstemp_cloexec(readname);
 				if (readfd < 0) {
@@ -1591,7 +1783,11 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 							}
 
 							fflush(readfp);
+#ifdef TIPPEWIN32
+							start_parsing(readfd, streamfpopen(readfp), initial_offset, ahead, &is_parsing, &parallel_parser, parser_created, reading.c_str(), &readers, &progress_seq, exclude, include, exclude_all, filter, basezoom, layer, layermaps, initialized.data(), initial_x.data(), initial_y.data(), maxzoom, sources[layer].layer, gamma != 0, attribute_types, read_parallel_this, &dist_sum, &dist_count, guess_maxzoom, prefilter != NULL || postfilter != NULL);
+#else
 							start_parsing(readfd, streamfpopen(readfp), initial_offset, ahead, &is_parsing, &parallel_parser, parser_created, reading.c_str(), &readers, &progress_seq, exclude, include, exclude_all, filter, basezoom, layer, layermaps, initialized, initial_x, initial_y, maxzoom, sources[layer].layer, gamma != 0, attribute_types, read_parallel_this, &dist_sum, &dist_count, guess_maxzoom, prefilter != NULL || postfilter != NULL);
+#endif
 
 							initial_offset += ahead;
 							overall_offset += ahead;
@@ -1628,7 +1824,11 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 				fflush(readfp);
 
 				if (ahead > 0) {
+#ifdef TIPPEWIN32
+					start_parsing(readfd, streamfpopen(readfp), initial_offset, ahead, &is_parsing, &parallel_parser, parser_created, reading.c_str(), &readers, &progress_seq, exclude, include, exclude_all, filter, basezoom, layer, layermaps, initialized.data(), initial_x.data(), initial_y.data(), maxzoom, sources[layer].layer, gamma != 0, attribute_types, read_parallel_this, &dist_sum, &dist_count, guess_maxzoom, prefilter != NULL || postfilter != NULL);
+#else
 					start_parsing(readfd, streamfpopen(readfp), initial_offset, ahead, &is_parsing, &parallel_parser, parser_created, reading.c_str(), &readers, &progress_seq, exclude, include, exclude_all, filter, basezoom, layer, layermaps, initialized, initial_x, initial_y, maxzoom, sources[layer].layer, gamma != 0, attribute_types, read_parallel_this, &dist_sum, &dist_count, guess_maxzoom, prefilter != NULL || postfilter != NULL);
+#endif
 
 					if (parser_created) {
 						if (pthread_join(parallel_parser, NULL) != 0) {
@@ -1683,6 +1883,9 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 		}
 	}
 
+#ifdef TIPPEWIN32
+	int files_open_after_reading = 0;
+#else
 	int files_open_after_reading = open("/dev/null", O_RDONLY | O_CLOEXEC);
 	if (files_open_after_reading < 0) {
 		perror("open /dev/null");
@@ -1692,6 +1895,7 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 		perror("close");
 		exit(EXIT_FAILURE);
 	}
+#endif
 
 	if (files_open_after_reading > files_open_before_reading) {
 		fprintf(stderr, "Internal error: Files left open after reading input. (%d vs %d)\n",
@@ -1734,13 +1938,24 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 	// segment+offset to find the data.
 
 	// 2 * CPUS: One per input thread, one per tiling thread
+#ifdef TIPPEWIN32
+	std::vector<long long> pool_off;
+	std::vector<long long> meta_off;
+	pool_off.resize(2 * CPUS);
+	meta_off.resize(2 * CPUS);
+#else
 	long long pool_off[2 * CPUS];
 	long long meta_off[2 * CPUS];
+#endif
 	for (size_t i = 0; i < 2 * CPUS; i++) {
 		pool_off[i] = meta_off[i] = 0;
 	}
 
+#ifdef TIPPEWIN32
+	char poolname[1024];
+#else
 	char poolname[strlen(tmpdir) + strlen("/pool.XXXXXXXX") + 1];
+#endif
 	sprintf(poolname, "%s%s", tmpdir, "/pool.XXXXXXXX");
 
 	int poolfd = mkstemp_cloexec(poolname);
@@ -1757,7 +1972,11 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 
 	unlink(poolname);
 
+#ifdef TIPPEWIN32
+    char metaname[1024];
+#else
 	char metaname[strlen(tmpdir) + strlen("/meta.XXXXXXXX") + 1];
+#endif
 	sprintf(metaname, "%s%s", tmpdir, "/meta.XXXXXXXX");
 
 	int metafd = mkstemp_cloexec(metaname);
@@ -1840,7 +2059,11 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 		madvise(stringpool, poolpos, MADV_RANDOM);
 	}
 
+#ifdef TIPPEWIN32
+	char indexname[1024];
+#else
 	char indexname[strlen(tmpdir) + strlen("/index.XXXXXXXX") + 1];
+#endif
 	sprintf(indexname, "%s%s", tmpdir, "/index.XXXXXXXX");
 
 	int indexfd = mkstemp_cloexec(indexname);
@@ -1856,7 +2079,11 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 
 	unlink(indexname);
 
+#ifdef TIPPEWIN32
+	char geomname[1024];
+#else
 	char geomname[strlen(tmpdir) + strlen("/geom.XXXXXXXX") + 1];
+#endif
 	sprintf(geomname, "%s%s", tmpdir, "/geom.XXXXXXXX");
 
 	int geomfd = mkstemp_cloexec(geomname);
@@ -2231,14 +2458,24 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 		madvise(geom, indexpos, MADV_SEQUENTIAL);
 		madvise(geom, indexpos, MADV_WILLNEED);
 
+#ifdef TIPPEWIN32
+		std::vector<drop_state> ds;
+		ds.resize(maxzoom + 1);
+		prep_drop_states(ds.data(), maxzoom, basezoom, droprate);
+#else
 		struct drop_state ds[maxzoom + 1];
 		prep_drop_states(ds, maxzoom, basezoom, droprate);
+#endif
 
 		for (long long ip = 0; ip < indices; ip++) {
 			if (ip > 0 && map[ip].start != map[ip - 1].end) {
 				fprintf(stderr, "Mismatched index at %lld: %lld vs %lld\n", ip, map[ip].start, map[ip].end);
 			}
+#ifdef TIPPEWIN32
+			int feature_minzoom = calc_feature_minzoom(&map[ip], ds.data(), maxzoom, gamma);
+#else
 			int feature_minzoom = calc_feature_minzoom(&map[ip], ds, maxzoom, gamma);
+#endif
 			geom[map[ip].end - 1] = feature_minzoom;
 		}
 
@@ -2260,8 +2497,15 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 		exit(EXIT_FAILURE);
 	}
 
+#ifdef TIPPEWIN32
+	std::vector<int> fd;
+	std::vector<off_t> size;
+	fd.resize(TEMP_FILES);
+	size.resize(TEMP_FILES);
+#else
 	int fd[TEMP_FILES];
 	off_t size[TEMP_FILES];
+#endif
 
 	fd[0] = geomfd;
 	size[0] = geomst.st_size;
@@ -2273,7 +2517,11 @@ int read_input(std::vector<source> &sources, char *fname, int maxzoom, int minzo
 
 	std::atomic<unsigned> midx(0);
 	std::atomic<unsigned> midy(0);
+#ifdef TIPPEWIN32
+	int written = traverse_zooms(fd.data(), size.data(), meta, stringpool, &midx, &midy, maxzoom, minzoom, outdb, outdir, buffer, fname, tmpdir, gamma, full_detail, low_detail, min_detail, meta_off.data(), pool_off.data(), initial_x.data(), initial_y.data(), simplification, layermaps, prefilter, postfilter, attribute_accum, filter);
+#else
 	int written = traverse_zooms(fd, size, meta, stringpool, &midx, &midy, maxzoom, minzoom, outdb, outdir, buffer, fname, tmpdir, gamma, full_detail, low_detail, min_detail, meta_off, pool_off, initial_x, initial_y, simplification, layermaps, prefilter, postfilter, attribute_accum, filter);
+#endif
 
 	if (maxzoom != written) {
 		if (written > minzoom) {
@@ -3029,7 +3277,7 @@ int main(int argc, char **argv) {
 				if (strcmp(long_options_orig[lo].name, "output") == 0) {
 					fprintf(stderr, " --%s=output.mbtiles", long_options_orig[lo].name);
 					width += 9;
-				} else if (long_options_orig[lo].has_arg) {
+				} else if (long_options_orig[lo].has_arg != no_argument) {
 					fprintf(stderr, " [--%s=...]", long_options_orig[lo].name);
 				} else {
 					fprintf(stderr, " [--%s]", long_options_orig[lo].name);
@@ -3065,6 +3313,9 @@ int main(int argc, char **argv) {
 		max_tilestats_sample_values = max_tilestats_values;
 	}
 
+#ifdef TIPPEWIN32
+	files_open_at_start = 0;
+#else
 	signal(SIGPIPE, SIG_IGN);
 
 	files_open_at_start = open("/dev/null", O_RDONLY | O_CLOEXEC);
@@ -3076,6 +3327,7 @@ int main(int argc, char **argv) {
 		perror("close");
 		exit(EXIT_FAILURE);
 	}
+#endif
 
 	if (full_detail <= 0) {
 		full_detail = 12;
@@ -3204,6 +3456,51 @@ int main(int argc, char **argv) {
 }
 
 int mkstemp_cloexec(char *name) {
+#ifdef TIPPEWIN32
+	char* x1 = strchr(name, 'X');
+	char* x2 = strrchr(name, 'X');
+	assert(x2 - x1 + 1 >= 2 + 6);
+	int count = 0;
+	int fd = -1;
+	bool tryAgain = false;
+	char prev[1024];
+	strcpy(prev, name);
+
+	// Windows _mktemp_s is limited to 26 unique filenames.
+	// This loop replaces the first 2 XX characters with characters from a-z.
+	do {
+		tryAgain = false;
+		if (count > 0) {
+			int c = count;
+			x1[0] = 'a' + (c % 26);
+			c /= 26;
+			x1[1] = 'a' + (c % 26);
+			if (c >= 26)
+				break;
+		}
+		errno_t err = _mktemp_s(name, strlen(name) + 1);
+		if (err == EEXIST) {
+			strcpy(name, prev); // _mktemp_s() sets name to the empty string on failure
+			tryAgain = true;
+			++count;
+			continue;
+		} else if (err == EINVAL)
+			break;
+		fd = _sopen(name, _O_RDWR | _O_TRUNC | _O_CREAT | _O_BINARY | _O_TEMPORARY, _SH_DENYNO, _S_IREAD | _S_IWRITE);
+		if (fd == -1 && errno == EACCES) {
+			// _sopen returns EACCES when the file exists instead of EEXIST?
+			strcpy(name, prev);
+			tryAgain = true;
+			++count;
+		}
+	} while ((fd == -1) && tryAgain);
+
+	if (fd == -1) {
+		perror("_mktemp_s for temporary file");
+		exit(EXIT_FAILURE);
+	}
+	return fd;
+#else
 	int fd = mkstemp(name);
 	if (fd >= 0) {
 		if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
@@ -3212,10 +3509,16 @@ int mkstemp_cloexec(char *name) {
 		}
 	}
 	return fd;
+#endif
 }
 
 FILE *fopen_oflag(const char *name, const char *mode, int oflag) {
+#ifdef TIPPEWIN32
+	assert(!strcmp(mode, "wb"));
+	int fd = _sopen(name, oflag | _O_BINARY | _O_CREAT | _O_TEMPORARY, _SH_DENYNO, _S_IWRITE);
+#else
 	int fd = open(name, oflag);
+#endif
 	if (fd < 0) {
 		return NULL;
 	}
@@ -3227,6 +3530,11 @@ bool progress_time() {
 		return true;
 	}
 
+#ifdef TIPPEWIN32
+	struct _timeb timebuffer;
+	_ftime(&timebuffer);
+	double now = timebuffer.time + timebuffer.millitm * 1000.0;
+#else
 	struct timeval tv;
 	double now;
 	if (gettimeofday(&tv, NULL) != 0) {
@@ -3235,7 +3543,7 @@ bool progress_time() {
 	} else {
 		now = tv.tv_sec + tv.tv_usec / 1000000.0;
 	}
-
+#endif
 	if (now - last_progress >= progress_interval) {
 		last_progress = now;
 		return true;

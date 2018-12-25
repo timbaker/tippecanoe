@@ -13,19 +13,29 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef TIPPEWIN32
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 #include <limits.h>
 #include <zlib.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifdef TIPPEWIN32
+#include <mman.h>
+#else
 #include <sys/mman.h>
+#endif
 #include <cmath>
 #include <sqlite3.h>
 #include <pthread.h>
 #include <errno.h>
 #include <time.h>
 #include <fcntl.h>
+#ifndef TIPPEWIN32
 #include <sys/wait.h>
+#endif
 #include "mvt.hpp"
 #include "mbtiles.hpp"
 #include "dirtiles.hpp"
@@ -1433,6 +1443,7 @@ serial_feature next_feature(FILE *geoms, std::atomic<long long> *geompos_in, cha
 	}
 }
 
+#ifndef TIPPEWIN32 // TODO fork() etc
 struct run_prefilter_args {
 	FILE *geoms = NULL;
 	std::atomic<long long> *geompos_in = NULL;
@@ -1525,6 +1536,7 @@ void *run_prefilter(void *v) {
 	}
 	return NULL;
 }
+#endif // !TIPPEWIN32
 
 void add_tilestats(std::string const &layername, int z, std::vector<std::map<std::string, layermap_entry>> *layermaps, size_t tiling_seg, std::vector<std::vector<std::string>> *layer_unmaps, std::string const &key, serial_val const &val) {
 	std::map<std::string, layermap_entry> &layermap = (*layermaps)[tiling_seg];
@@ -1763,8 +1775,14 @@ long long write_tile(FILE *geoms, std::atomic<long long> *geompos_in, char *meta
 		std::map<std::string, accum_state> attribute_accum_state;
 		double coalesced_area = 0;
 
+#ifdef TIPPEWIN32
+		std::vector<int> within;
+		within.resize(unsigned(child_shards));
+		auto geompos = std::make_unique<std::atomic<long long>[]>(child_shards);
+#else
 		int within[child_shards];
 		std::atomic<long long> geompos[child_shards];
+#endif
 		for (size_t i = 0; i < (size_t) child_shards; i++) {
 			geompos[i] = 0;
 			within[i] = 0;
@@ -1778,6 +1796,9 @@ long long write_tile(FILE *geoms, std::atomic<long long> *geompos_in, char *meta
 			*geompos_in = og;
 		}
 
+#ifdef TIPPEWIN32 // TODO fork() etc
+		json_pull *prefilter_jp = NULL;
+#else
 		int prefilter_write = -1, prefilter_read = -1;
 		pid_t prefilter_pid = 0;
 		FILE *prefilter_fp = NULL;
@@ -1840,15 +1861,24 @@ long long write_tile(FILE *geoms, std::atomic<long long> *geompos_in, char *meta
 			}
 			prefilter_jp = json_begin_file(prefilter_read_fp);
 		}
+#endif // TIPPEWIN32
 
 		while (1) {
 			serial_feature sf;
 			ssize_t which_partial = -1;
 
 			if (prefilter == NULL) {
+#ifdef TIPPEWIN32
+				sf = next_feature(geoms, geompos_in, metabase, meta_off, z, tx, ty, initial_x, initial_y,
+									&original_features, &unclipped_features, nextzoom, maxzoom, minzoom,
+									max_zoom_increment, pass, passes, along, alongminus, buffer, within.data(),
+									&first_time, geomfile, geompos.get(), &oprogress, todo, fname, child_shards,
+									filter, stringpool, pool_off, layer_unmaps);
+#else
 				sf = next_feature(geoms, geompos_in, metabase, meta_off, z, tx, ty, initial_x, initial_y, &original_features, &unclipped_features, nextzoom, maxzoom, minzoom, max_zoom_increment, pass, passes, along, alongminus, buffer, within, &first_time, geomfile, geompos, &oprogress, todo, fname, child_shards, filter, stringpool, pool_off, layer_unmaps);
 			} else {
 				sf = parse_feature(prefilter_jp, z, tx, ty, layermaps, tiling_seg, layer_unmaps, postfilter != NULL);
+#endif
 			}
 
 			if (sf.t < 0) {
@@ -2025,6 +2055,7 @@ long long write_tile(FILE *geoms, std::atomic<long long> *geompos_in, char *meta
 			}
 		}
 
+#ifndef TIPPEWIN32 // TODO fork() etc
 		if (prefilter != NULL) {
 			json_end(prefilter_jp);
 			if (fclose(prefilter_read_fp) != 0) {
@@ -2047,6 +2078,7 @@ long long write_tile(FILE *geoms, std::atomic<long long> *geompos_in, char *meta
 				exit(EXIT_FAILURE);
 			}
 		}
+#endif // TIPPEWIN32
 
 		first_time = false;
 		bool merge_successful = true;
@@ -2060,7 +2092,12 @@ long long write_tile(FILE *geoms, std::atomic<long long> *geompos_in, char *meta
 			tasks = 1;
 		}
 
+#ifdef TIPPEWIN32
+		std::vector<pthread_t> pthreads;
+		pthreads.resize((unsigned)tasks);
+#else
 		pthread_t pthreads[tasks];
+#endif
 		std::vector<partial_arg> args;
 		args.resize(tasks);
 		for (int i = 0; i < tasks; i++) {
@@ -2267,9 +2304,11 @@ long long write_tile(FILE *geoms, std::atomic<long long> *geompos_in, char *meta
 			}
 		}
 
+#ifndef TIPPEWIN32
 		if (postfilter != NULL) {
 			tile.layers = filter_layers(postfilter, tile.layers, z, tx, ty, layermaps, tiling_seg, layer_unmaps, 1 << line_detail);
 		}
+#endif
 
 		if (z == 0 && unclipped_features < original_features / 2 && clipbboxes.size() == 0) {
 			fprintf(stderr, "\n\nMore than half the features were clipped away at zoom level 0.\n");
@@ -2520,7 +2559,6 @@ void *run_thread(void *vargs) {
 		}
 
 		// printf("%lld of geom_size\n", (long long) geom_size[j]);
-
 		FILE *geom = fdopen(arg->geomfd[j], "rb");
 		if (geom == NULL) {
 			perror("mmap geom");
@@ -2637,10 +2675,19 @@ int traverse_zooms(int *geomfd, off_t *geom_size, char *metabase, char *stringpo
 	for (i = 0; i <= maxzoom; i++) {
 		std::atomic<long long> most(0);
 
+#ifdef TIPPEWIN32
+		std::vector<FILE *> sub;
+		std::vector<int> subfd;
+		sub.resize(TEMP_FILES);
+		subfd.resize(TEMP_FILES);
+		for (size_t j = 0; j < TEMP_FILES; j++) {
+			char geomname[1024];
+#else
 		FILE *sub[TEMP_FILES];
 		int subfd[TEMP_FILES];
 		for (size_t j = 0; j < TEMP_FILES; j++) {
 			char geomname[strlen(tmpdir) + strlen("/geom.XXXXXXXX" XSTRINGIFY(INT_MAX)) + 1];
+#endif
 			sprintf(geomname, "%s/geom%zu.XXXXXXXX", tmpdir, j);
 			subfd[j] = mkstemp_cloexec(geomname);
 			// printf("%s\n", geomname);
@@ -2751,7 +2798,12 @@ int traverse_zooms(int *geomfd, off_t *geom_size, char *metabase, char *stringpo
 		double zoom_fraction = 1;
 
 		for (size_t pass = start; pass < 2; pass++) {
+#ifdef TIPPEWIN32
+			std::vector<pthread_t> pthreads;
+			pthreads.resize(threads);
+#else
 			pthread_t pthreads[threads];
+#endif
 			std::vector<write_tile_args> args;
 			args.resize(threads);
 			std::atomic<int> running(threads);
@@ -2765,7 +2817,11 @@ int traverse_zooms(int *geomfd, off_t *geom_size, char *metabase, char *stringpo
 				args[thread].outdir = outdir;
 				args[thread].buffer = buffer;
 				args[thread].fname = fname;
+#ifdef TIPPEWIN32
+				args[thread].geomfile = &sub[thread * (TEMP_FILES / threads)];
+#else
 				args[thread].geomfile = sub + thread * (TEMP_FILES / threads);
+#endif
 				args[thread].todo = todo;
 				args[thread].along = &along;  // locked with var_lock
 				args[thread].gamma = zoom_gamma;

@@ -6,7 +6,11 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#ifdef TIPPEWIN32
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 #include <fcntl.h>
 #include <ctype.h>
 #include <errno.h>

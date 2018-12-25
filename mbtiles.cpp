@@ -3,6 +3,9 @@
 #define _GNU_SOURCE
 #endif
 
+#ifdef TIPPEWIN32
+#include <algorithm>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

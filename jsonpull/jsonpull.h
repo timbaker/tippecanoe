@@ -1,6 +1,12 @@
 #ifndef JSONPULL_H
 #define JSONPULL_H
 
+#ifdef TIPPEWIN32
+#include <stdio.h>
+#include <basetsd.h>
+typedef SSIZE_T ssize_t;
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

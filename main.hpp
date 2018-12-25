@@ -5,6 +5,28 @@
 #include <atomic>
 #include <string>
 
+#if defined(TIPPEWIN32)
+// FIXME: the comment below says 'struct index' should be 32 bytes, but it's 36 even with 'pragma pack(1)'.
+// It must align with virtual memory allocation granularity (a multiple of 1024).
+struct index {
+    long long start = 0;
+    long long end = 0;
+    unsigned long long ix = 0;
+    unsigned long long seq;
+    short segment = 0;
+    unsigned short t;
+    uint8_t pad[64 - 36]; // pad to 64 bytes;
+
+    index()
+        : seq(0),
+          t(0) {
+    }
+};
+
+static_assert (sizeof(index) == 64, "struct index must align to virtual-memory allocation granularity");
+
+#else
+
 struct index {
 	long long start = 0;
 	long long end = 0;
@@ -18,6 +40,8 @@ struct index {
 	      seq(0) {
 	}
 };
+
+#endif
 
 struct clipbbox {
 	double lon1;
@@ -50,6 +74,9 @@ extern int cluster_distance;
 extern std::string attribute_for_id;
 
 int mkstemp_cloexec(char *name);
+#if defined(TIPPEWIN32)
+#define O_CLOEXEC 0
+#endif
 FILE *fopen_oflag(const char *name, const char *mode, int oflag);
 bool progress_time();
 

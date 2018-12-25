@@ -5,7 +5,17 @@
 #include <algorithm>
 #include <stdio.h>
 #include <string.h>
+#ifdef TIPPEWIN32
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
+#ifdef TIPPEWIN32
+#define S_IRWXU (S_IRUSR | S_IWUSR | S_IXUSR)
+#define S_IRWXG (S_IRGRP | S_IWGRP | S_IXGRP)
+#define S_IRWXO (S_IROTH | S_IWOTH | S_IXOTH)
+#include <direct.h> // mkdir
+#endif
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sqlite3.h>
@@ -22,6 +32,15 @@ std::string dir_read_tile(std::string base, struct zxy tile) {
 }
 
 void dir_write_tile(const char *outdir, int z, int tx, int ty, std::string const &pbf) {
+#ifdef TIPPEWIN32
+	mkdir(outdir);
+	std::string curdir(outdir);
+	std::string slash("/");
+	std::string newdir = curdir + slash + std::to_string(z);
+	mkdir(newdir.c_str());
+	newdir = newdir + "/" + std::to_string(tx);
+	mkdir(newdir.c_str());
+#else
 	mkdir(outdir, S_IRWXU | S_IRWXG | S_IRWXO);
 	std::string curdir(outdir);
 	std::string slash("/");
@@ -29,6 +48,7 @@ void dir_write_tile(const char *outdir, int z, int tx, int ty, std::string const
 	mkdir(newdir.c_str(), S_IRWXU | S_IRWXG | S_IRWXO);
 	newdir = newdir + "/" + std::to_string(tx);
 	mkdir(newdir.c_str(), S_IRWXU | S_IRWXG | S_IRWXO);
+#endif
 	newdir = newdir + "/" + std::to_string(ty) + ".pbf";
 
 	struct stat st;
@@ -65,7 +85,11 @@ static bool pbfname(const char *s) {
 void check_dir(const char *dir, char **argv, bool force, bool forcetable) {
 	struct stat st;
 
+#ifdef TIPPEWIN32
+	mkdir(dir);
+#else
 	mkdir(dir, S_IRWXU | S_IRWXG | S_IRWXO);
+#endif
 	std::string meta = std::string(dir) + "/" + "metadata.json";
 	if (force) {
 		unlink(meta.c_str());  // error OK since it may not exist;

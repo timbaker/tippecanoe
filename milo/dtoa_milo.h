@@ -4,7 +4,11 @@
 #include <cmath>
 
 #if defined(_MSC_VER)
+#ifdef TIPPEWIN32
+#include <stdint.h>
+#else
 #include "msinttypes/stdint.h"
+#endif
 #include <intrin.h>
 #else
 #include <stdint.h>

@@ -9,13 +9,19 @@
 #include <string>
 #include <map>
 #include <set>
+#ifdef TIPPEWIN32
+#include <io.h>
+#else
 #include <pthread.h>
 #include <unistd.h>
+#endif
 #include <fcntl.h>
 #include <errno.h>
 #include <cmath>
 #include <sys/types.h>
+#ifndef TIPPEWIN32
 #include <sys/wait.h>
+#endif
 #include <sqlite3.h>
 #include <limits.h>
 #include "main.hpp"
@@ -32,6 +38,9 @@ extern "C" {
 #include "plugin.hpp"
 #include "write_json.hpp"
 #include "read_json.hpp"
+
+// --prefilter and --postfilter aren't implemented due to the use of fork()
+#ifndef TIPPEWIN32
 
 struct writer_arg {
 	int write_to;
@@ -658,3 +667,5 @@ std::vector<mvt_layer> filter_layers(const char *filter, std::vector<mvt_layer> 
 
 	return nlayers;
 }
+
+#endif // !TIPPEWIN32

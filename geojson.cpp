@@ -6,10 +6,18 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#ifdef TIPPEWIN32
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifdef TIPPEWIN32
+#include <mman.h>
+#else
 #include <sys/mman.h>
+#endif
 #include <string.h>
 #include <fcntl.h>
 #include <ctype.h>
@@ -17,7 +25,9 @@
 #include <limits.h>
 #include <sqlite3.h>
 #include <stdarg.h>
+#ifndef TIPPEWIN32
 #include <sys/resource.h>
+#endif
 #include <pthread.h>
 #include <vector>
 #include <algorithm>
